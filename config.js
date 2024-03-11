@@ -39,7 +39,7 @@ export const config ={
                 }
             ],
             maxIncomeBitrate: 3500000,
-            initialAvailableOutgoingBitrate: 1000000
+            initialAvailableOutgoingBitrate: 6000000
         }  
     }
 }

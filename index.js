@@ -28,9 +28,7 @@ let pipedProducers = []
 let producers = []
 let producerObjects = new Map()
 let consumers = new Map()
-let consumerObjects = new Map()
 let audioLevelObserverUsers = new Map()
-let recordingMeetings = new Map()
 
 io.on("connection",(socket)=>{
 socket.on('addUserCall',(user)=>{
@@ -56,8 +54,8 @@ socket.on('addUserCall',(user)=>{
  })
 
 
- socket.on("createConsumeTransport",(data)=>{
-  createConsumeTransport(data,socket)
+ socket.on("createConsumeTransport",(data,callback)=>{
+  createConsumeTransport(data,socket,callback)
 })
 
 socket.on('transportConnect',(data)=>{
@@ -295,9 +293,6 @@ async function produce(data,socket){
         }
         producers.push({producerId:Producer.id,socketId:socket.id,room:room,kind:kind,screenShare:data?.appData?.type==='screen'?true:false})
         socket?.broadcast?.to(room)?.emit('newProducer',{producerId:Producer.id,socketId:socket.id,screenShare:data?.appData?.type==='screen'?true:false})
-        if(recordingMeetings.has(room)){
-          await recordProducer({producerId:Producer.id,socketId:socket.id,room:room,kind:kind,screenShare:data?.appData?.type==='screen'?true:false},recordingMeetings.get(room),room)
-        }
         }
     catch(err){
         console.log(err)
@@ -306,56 +301,42 @@ async function produce(data,socket){
 }
 
 
-function create_UUID(){
-  let dt = new Date().getTime();
-  let uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-  let r = (dt + Math.random()*16)%16 | 0;
-  dt = Math.floor(dt/16);
-  return (c=='x' ? r :(r&0x3|0x8)).toString(16);
-  });
-  return uuid;
-}
-
-async function createConsumeTransport(data,socket){
+async function createConsumeTransport(data,socket,callback){
   let storageId;
   let param;
     try{
         const routerIdx = getConsumerRouter();
-        const {transport,params} = await createNewTransport(consumerRouters[routerIdx])
-        param = params;
-        storageId = create_UUID()
-        consumerTransports.set(storageId,{transport:transport,router:routerIdx})
-        membersinConsumerRouters[routerIdx] +=1;
-        if(consumers.has(socket.id)){
-          consumers.set(socket.id,[...consumers.get(socket.id),storageId])
+        storageId = `${socket.id}-${routerIdx}`
+        if(consumerTransports.has(storageId)){
+            const transport = consumerTransports.get(storageId)?.transport;
+            param = {
+                id:transport.id,
+                iceParameters:transport.iceParameters,
+                iceCandidates:transport.iceCandidates,
+                dtlsParameters:transport.dtlsParameters,
+                sctpParameters:transport.sctpParameters
+            }
+            membersinConsumerRouters[routerIdx] +=1;
         }
         else{
-          consumers.set(socket.id,[storageId])
+            const {transport,params} = await createNewTransport(consumerRouters[routerIdx])
+            param = params;
+            consumerTransports.set(storageId,{transport:transport,router:routerIdx})
+            membersinConsumerRouters[routerIdx] +=1;
+            if(consumers.has(socket.id)){
+              consumers.set(socket.id,[...consumers.get(socket.id),storageId])
+            }
+            else{
+              consumers.set(socket.id,[storageId])
+            }
         }
-        const originalRouterIdx = producerTransports.get(data.socketId)?.router;
-        const filterPipedProducer = pipedProducers.find((producer) => producer?.producerId === data?.producerId)
-        console.log(filterPipedProducer,'filterpipedProducer')
-        if (filterPipedProducer && Object.keys(filterPipedProducer).length!==0) {
-          const checkSameRouter = filterPipedProducer?.pipedRouters?.some((router)=>router.idx===routerIdx)
-          console.log(checkSameRouter,'checksamerouter')
-          if (!checkSameRouter) {
-            let idxToUse = filterPipedProducer?.pipedRouters[filterPipedProducer?.pipedRouters?.length-1]?.idx;
-            await consumerRouters[idxToUse]?.pipeToRouter({ producerId: data?.producerId, router: consumerRouters[routerIdx] });
-            const arrIndex = pipedProducers?.findIndex((item)=>item?.producerId===data?.producerId)
-            pipedProducers[arrIndex].pipedRouters = [...filterPipedProducer?.pipedRouters,{type:'consumer',idx:routerIdx}]
-            pipedProducers[arrIndex].originalRouters = [...filterPipedProducer?.originalRouters,{type:'consumer',idx:idxToUse}]
-          }
-        }
-        else {
-          await producerRouters[originalRouterIdx]?.pipeToRouter({ producerId: data?.producerId, router: consumerRouters[routerIdx] });
-          pipedProducers.push({ pipedRouters: [{type:'consumer',idx:routerIdx}], socketId: data?.socketId, producerId: data?.producerId,originalRouters: [{type:'producer',idx:originalRouterIdx}] })
-        }
-        io.to(socket?.id).emit('ConsumeTransportCreated',{data:params,storageId:storageId,...data})
+        await pipeProducer(data,routerIdx)
+        callback({data:param,storageId:storageId,...data})
       
     }
     catch(err){
         if(err?.toString()==='Error: a Producer with same producerId already exists [method:transport.produce]' || `TypeError: a Producer with same id "${data?.producerId}" already exists`){
-          io.to(socket?.id).emit('ConsumeTransportCreated',{data:param,storageId:storageId,...data})
+          callback({data:param,storageId:storageId,...data})
           return;
         }
         console.log(err)
@@ -371,6 +352,25 @@ async function createConsumeTransport(data,socket){
          consumers.set(socket.id,filterArr)
 
         }
+    }
+}
+
+async function pipeProducer(data,routerIdx){
+    const originalRouterIdx = producerTransports.get(data.socketId)?.router;
+    const filterPipedProducer = pipedProducers.find((producer) => producer?.producerId === data?.producerId)
+    if (filterPipedProducer && Object.keys(filterPipedProducer).length!==0) {
+      const checkSameRouter = filterPipedProducer?.pipedRouters?.some((router)=>router.idx===routerIdx)
+      if (!checkSameRouter) {
+        let idxToUse = filterPipedProducer?.pipedRouters[filterPipedProducer?.pipedRouters?.length-1]?.idx;
+        await consumerRouters[idxToUse]?.pipeToRouter({ producerId: data?.producerId, router: consumerRouters[routerIdx] });
+        const arrIndex = pipedProducers?.findIndex((item)=>item?.producerId===data?.producerId)
+        pipedProducers[arrIndex].pipedRouters = [...filterPipedProducer?.pipedRouters,{type:'consumer',idx:routerIdx}]
+        pipedProducers[arrIndex].originalRouters = [...filterPipedProducer?.originalRouters,{type:'consumer',idx:idxToUse}]
+      }
+    }
+    else {
+      await producerRouters[originalRouterIdx]?.pipeToRouter({ producerId: data?.producerId, router: consumerRouters[routerIdx] });
+      pipedProducers.push({ pipedRouters: [{type:'consumer',idx:routerIdx}], socketId: data?.socketId, producerId: data?.producerId,originalRouters: [{type:'producer',idx:originalRouterIdx}] })
     }
 }
 
@@ -416,12 +416,11 @@ async function connectConsumerTransport(data,socket){
 async function startConsuming(data,socket){
     try{
          const consumeTrans = consumerTransports.get(data?.storageId)?.transport;
-         let consumer = await consumeTrans.consume({
+         const consumer = await consumeTrans.consume({
             producerId:data?.producerId,
             rtpCapabilities:data.rtpCapabilities,
             paused:data?.paused
         })
-        consumerObjects.set(data?.storageId,consumer)
 
         const userDetails = Users.find((user)=>user?.socketId===data?.socketId)
 
@@ -457,17 +456,11 @@ async function startConsuming(data,socket){
         })
 
           consumer.on('producerclose',async()=>{
+          await consumer?.close()
           const consumerItem = consumerTransports.get(data?.storageId)
-          const transport = consumerItem?.transport;
           const router = consumerItem?.router;
-          await transport?.close()
           membersinConsumerRouters[router] -=1;
-          const sockConsumers = consumers.get(socket.id)
-          const filterConsumers = sockConsumers?.filter((storageId)=>storageId!==data?.storageId);
-          consumers.set(socket.id,filterConsumers)
-          consumerObjects.delete(data?.storageId)
-          consumerTransports.delete(data?.storageId)
-          io.to(socket?.id).emit('closeConsumer',data?.storageId)
+          io.to(socket?.id).emit('closeConsumer',{socketId:data?.socketId,screenShare:data?.screenShare,producerId:data?.producerId})
         })
 
 
@@ -515,13 +508,10 @@ async function handleDisconnect(socketId){
           const consumerItem = consumerTransports.get(sockConsumers[i])
           const transport = consumerItem?.transport;
           const router = consumerItem?.router;
+          membersinConsumerRouters[router] -= transport?.consumers?.size;
           await transport?.close()
-          membersinConsumerRouters[router] -=1;
           consumerTransports.delete(sockConsumers[i])
         }
-         if(consumerObjects.has(sockConsumers[i])){
-          consumerObjects.delete(sockConsumers[i])
-         }
       }
       consumers.delete(socketId)
     }
