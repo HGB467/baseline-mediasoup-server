@@ -340,18 +340,18 @@ async function createConsumeTransport(data,socket,callback){
           return;
         }
         console.log(err)
-        if(consumerTransports.has(storageId)){
-          const item = consumerTransports.get(storageId);
-          const router = item?.router;
-          membersinConsumerRouters[router] -=1;
-          const transport = item?.transport;
-          await transport?.close()
-          consumerTransports.delete(storageId)
-         const mapItem = consumers.get(socket.id)
-         const filterArr = mapItem.filter((item)=>item!==storageId)
-         consumers.set(socket.id,filterArr)
+        // if(consumerTransports.has(storageId)){
+        //   const item = consumerTransports.get(storageId);
+        //   const router = item?.router;
+        //   membersinConsumerRouters[router] -=1;
+        //   const transport = item?.transport;
+        //   await transport?.close()
+        //   consumerTransports.delete(storageId)
+        //  const mapItem = consumers.get(socket.id)
+        //  const filterArr = mapItem.filter((item)=>item!==storageId)
+        //  consumers.set(socket.id,filterArr)
 
-        }
+        // }
     }
 }
 
