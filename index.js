@@ -3,6 +3,7 @@ import { Server } from 'socket.io'
 import { cpus } from 'os'
 import { createWorker } from './worker.js'
 import { createNewTransport } from './transport.js'
+import { ConsumeProcessorQueue } from './ConsumeProcessorQueue.js'
 
 
 const server = createServer()
@@ -29,6 +30,9 @@ let producers = []
 let producerObjects = new Map()
 let consumers = new Map()
 let audioLevelObserverUsers = new Map()
+let consumerObjects = new Map()
+
+const queue = new ConsumeProcessorQueue()
 
 io.on("connection",(socket)=>{
 socket.on('addUserCall',(user)=>{
@@ -55,7 +59,7 @@ socket.on('addUserCall',(user)=>{
 
 
  socket.on("createConsumeTransport",(data,callback)=>{
-  createConsumeTransport(data,socket,callback)
+  queue.addItemToProcess(data,socket,callback)
 })
 
 socket.on('transportConnect',(data)=>{
@@ -96,6 +100,16 @@ socket.on('startConsuming',(data)=>{
   status:'OK'
  })
  
+ })
+
+ socket.on('resumeConsumer',async(consumerId)=>{
+  try{
+    const consumer = consumerObjects.get(consumerId)
+    await consumer?.resume()
+  }
+  catch(err){
+    console.log(err)
+  }
  })
 
  socket.on('chat',({roomId,message})=>{
@@ -301,7 +315,7 @@ async function produce(data,socket){
 }
 
 
-async function createConsumeTransport(data,socket,callback){
+export async function createConsumeTransport(data,socket,callback){
   let storageId;
   let param;
     try{
@@ -422,6 +436,8 @@ async function startConsuming(data,socket){
             paused:data?.paused
         })
 
+        consumerObjects.set(consumer?.id,consumer)
+
         const userDetails = Users.find((user)=>user?.socketId===data?.socketId)
 
         const producer = producerObjects.get(data?.producerId)
@@ -460,7 +476,7 @@ async function startConsuming(data,socket){
           const consumerItem = consumerTransports.get(data?.storageId)
           const router = consumerItem?.router;
           membersinConsumerRouters[router] -=1;
-          io.to(socket?.id).emit('closeConsumer',{socketId:data?.socketId,screenShare:data?.screenShare,producerId:data?.producerId})
+          io.to(socket?.id).emit('closeConsumer',{socketId:data?.socketId,screenShare:data?.screenShare,producerId:data?.producerId,kind:consumer?.kind})
         })
 
 
@@ -509,6 +525,9 @@ async function handleDisconnect(socketId){
           const transport = consumerItem?.transport;
           const router = consumerItem?.router;
           membersinConsumerRouters[router] -= transport?.consumers?.size;
+          for(let [key,value] of transport?.consumers){
+           consumerObjects.delete(value?.id)
+          }
           await transport?.close()
           consumerTransports.delete(sockConsumers[i])
         }
